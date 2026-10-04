@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import spiceypy as spice
 import numpy as np
 import math
+from datetime import datetime, timedelta
 
 # 1. Initialize the App
 app = FastAPI(title="CLPS Lunar Mission API")
@@ -117,20 +118,20 @@ def check_visibility(lat: float, lon: float, date: str = "2026-11-14T09:00:00"):
         
         _, sun_block_dist, sun_block_elev = check_terrain_blockage(lat, lon, sun_az, sun_elev, rover_elevation_m)
         _, earth_block_dist, earth_block_elev = check_terrain_blockage(lat, lon, earth_az, earth_elev, rover_elevation_m)
-        
-        # Calculate Power Status
-        if sun_block_dist:
-            power_status = "BLOCKED_BY_TERRAIN"
-        elif sun_elev < 0:
+
+        # Calculate Power Status (Fixed Order for Nighttime)
+        if sun_elev < 0:
             power_status = "HORIZON_NIGHT"
+        elif sun_block_dist:
+            power_status = "BLOCKED_BY_TERRAIN"
         else:
             power_status = "ACTIVE"
             
-        # Calculate Comm Status
-        if earth_block_dist:
-            comm_status = "BLOCKED_BY_TERRAIN"
-        elif earth_elev < 0:
+        # Calculate Comm Status (Fixed Order for Radio Silence)
+        if earth_elev < 0:
             comm_status = "HORIZON_BLOCKED"
+        elif earth_block_dist:
+            comm_status = "BLOCKED_BY_TERRAIN"
         else:
             comm_status = "ONLINE"
             
@@ -151,6 +152,67 @@ def check_visibility(lat: float, lon: float, date: str = "2026-11-14T09:00:00"):
                 "blocked_at_km": earth_block_dist,
                 "blocker_elevation_m": float(earth_block_elev) if earth_block_elev else None
             }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/mission-analysis")
+def analyze_mission(lat: float, lon: float, start_date: str = "2026-11-14T09:00", days: int = 14):
+    try:
+        rover_elevation_m = get_terrain_elevation(lat, lon)
+        rover_radius_km = moon_radius_km + (rover_elevation_m / 1000.0)
+        
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        surface_pos = np.array([
+            rover_radius_km * math.cos(lat_rad) * math.cos(lon_rad),
+            rover_radius_km * math.cos(lat_rad) * math.sin(lon_rad),
+            rover_radius_km * math.sin(lat_rad)
+        ])
+        
+        start_dt = datetime.strptime(start_date[:16], "%Y-%m-%dT%H:%M")
+        total_hours = days * 24
+        
+        solar_active_hours = comm_active_hours = 0
+        current_solar_outage = max_solar_outage = 0
+        current_comm_outage = max_comm_outage = 0
+        
+        for hour in range(total_hours):
+            current_dt = start_dt + timedelta(hours=hour)
+            et = spice.str2et(current_dt.strftime("%Y-%m-%dT%H:%M:00"))
+            
+            sun_state, _ = spice.spkpos('SUN', et, 'IAU_MOON', 'LT+S', 'MOON')
+            earth_state, _ = spice.spkpos('EARTH', et, 'IAU_MOON', 'LT+S', 'MOON')
+            
+            sun_elev, sun_az = get_azimuth_and_elevation(sun_state, surface_pos)
+            earth_elev, earth_az = get_azimuth_and_elevation(earth_state, surface_pos)
+            
+            _, sun_block, _ = check_terrain_blockage(lat, lon, sun_az, sun_elev, rover_elevation_m)
+            _, earth_block, _ = check_terrain_blockage(lat, lon, earth_az, earth_elev, rover_elevation_m)
+            
+            # If sun is below horizon OR blocked by a mountain
+            if sun_elev < 0 or sun_block:
+                current_solar_outage += 1
+                if current_solar_outage > max_solar_outage: max_solar_outage = current_solar_outage
+            else:
+                solar_active_hours += 1
+                current_solar_outage = 0
+                
+            # If Earth is below horizon OR blocked by a mountain
+            if earth_elev < 0 or earth_block:
+                current_comm_outage += 1
+                if current_comm_outage > max_comm_outage: max_comm_outage = current_comm_outage
+            else:
+                comm_active_hours += 1
+                current_comm_outage = 0
+
+        return {
+            "duration_days": days,
+            "solar_availability_percent": round((solar_active_hours / total_hours) * 100, 1),
+            "comm_availability_percent": round((comm_active_hours / total_hours) * 100, 1),
+            "max_solar_outage_hours": max_solar_outage,
+            "max_comm_outage_hours": max_comm_outage
         }
     except Exception as e:
         return {"error": str(e)}
