@@ -64,7 +64,13 @@ def get_azimuth_and_elevation(target_pos, observer_pos):
         
     return elevation, azimuth
 
-def check_terrain_blockage(start_lat, start_lon, azimuth, target_elevation, rover_elevation_m):
+def check_terrain_blockage(start_lat, start_lon, azimuth, target_elevation, rover_elevation_m, target_type="POINT"):
+    angular_radius = 0.0
+    if target_type == "SUN": angular_radius = 0.26
+    elif target_type == "EARTH": angular_radius = 0.95
+    
+    adjusted_target_elevation = target_elevation + angular_radius
+    
     max_terrain_angle = -90.0
     blocking_distance = None
     blocking_elevation = None
@@ -73,8 +79,8 @@ def check_terrain_blockage(start_lat, start_lon, azimuth, target_elevation, rove
     start_lon_rad = math.radians(start_lon)
     azimuth_rad = math.radians(azimuth)
     
-    # Walk 50km out to check for mountains
-    for distance_km in range(1, 51):
+    for step in range(1, 201):
+        distance_km = step * 0.25
         ad = distance_km / moon_radius_km
         new_lat_rad = math.asin(math.sin(start_lat_rad)*math.cos(ad) + 
                                 math.cos(start_lat_rad)*math.sin(ad)*math.cos(azimuth_rad))
@@ -82,15 +88,17 @@ def check_terrain_blockage(start_lat, start_lon, azimuth, target_elevation, rove
                                                  math.cos(ad) - math.sin(start_lat_rad)*math.sin(new_lat_rad))
         
         step_elev_m = get_terrain_elevation(math.degrees(new_lat_rad), math.degrees(new_lon_rad))
-        height_diff_km = (step_elev_m - rover_elevation_m) / 1000.0
+        curvature_drop_km = (distance_km ** 2) / (2 * moon_radius_km)
+        height_diff_km = ((step_elev_m - rover_elevation_m) / 1000.0) - curvature_drop_km
+        
         angle_deg = math.degrees(math.atan2(height_diff_km, distance_km))
         
         if angle_deg > max_terrain_angle:
             max_terrain_angle = angle_deg
-            if angle_deg > target_elevation:
+            if angle_deg > adjusted_target_elevation:
                 blocking_distance = distance_km
                 blocking_elevation = step_elev_m
-                break # Signal Blocked!
+                break
                 
     return max_terrain_angle, blocking_distance, blocking_elevation
 
@@ -116,19 +124,18 @@ def check_visibility(lat: float, lon: float, date: str = "2026-11-14T09:00:00"):
         sun_elev, sun_az = get_azimuth_and_elevation(sun_state, surface_pos)
         earth_elev, earth_az = get_azimuth_and_elevation(earth_state, surface_pos)
         
-        _, sun_block_dist, sun_block_elev = check_terrain_blockage(lat, lon, sun_az, sun_elev, rover_elevation_m)
-        _, earth_block_dist, earth_block_elev = check_terrain_blockage(lat, lon, earth_az, earth_elev, rover_elevation_m)
+        _, sun_block_dist, sun_block_elev = check_terrain_blockage(lat, lon, sun_az, sun_elev, rover_elevation_m, "SUN")
+        _, earth_block_dist, earth_block_elev = check_terrain_blockage(lat, lon, earth_az, earth_elev, rover_elevation_m, "EARTH")
 
-        # Calculate Power Status (Fixed Order for Nighttime)
-        if sun_elev < 0:
+        # 🌍 SCIENCE UPGRADE: Check apparent disk edges, not center point
+        if sun_elev < -0.26:
             power_status = "HORIZON_NIGHT"
         elif sun_block_dist:
             power_status = "BLOCKED_BY_TERRAIN"
         else:
-            power_status = "ACTIVE"
+            power_status = "ILLUMINATED"
             
-        # Calculate Comm Status (Fixed Order for Radio Silence)
-        if earth_elev < 0:
+        if earth_elev < -0.95:
             comm_status = "HORIZON_BLOCKED"
         elif earth_block_dist:
             comm_status = "BLOCKED_BY_TERRAIN"
@@ -156,9 +163,8 @@ def check_visibility(lat: float, lon: float, date: str = "2026-11-14T09:00:00"):
     except Exception as e:
         return {"error": str(e)}
 
-
 @app.get("/api/mission-analysis")
-def analyze_mission(lat: float, lon: float, start_date: str = "2026-11-14T09:00", days: int = 14):
+def analyze_mission(lat: float, lon: float, start_date: str = "2026-11-14T09:00", days: int = 14, step_minutes: int = 10):
     try:
         rover_elevation_m = get_terrain_elevation(lat, lon)
         rover_radius_km = moon_radius_km + (rover_elevation_m / 1000.0)
@@ -172,14 +178,19 @@ def analyze_mission(lat: float, lon: float, start_date: str = "2026-11-14T09:00"
         ])
         
         start_dt = datetime.strptime(start_date[:16], "%Y-%m-%dT%H:%M")
-        total_hours = days * 24
         
-        solar_active_hours = comm_active_hours = 0
+        # ⏱️ SPEED UPGRADE: Dynamic time steps!
+        total_steps = int((days * 24 * 60) / step_minutes)
+        
+        solar_active_steps = comm_active_steps = 0
         current_solar_outage = max_solar_outage = 0
         current_comm_outage = max_comm_outage = 0
         
-        for hour in range(total_hours):
-            current_dt = start_dt + timedelta(hours=hour)
+        solar_timeline = []
+        comm_timeline = []
+        
+        for step in range(total_steps):
+            current_dt = start_dt + timedelta(minutes=step * step_minutes)
             et = spice.str2et(current_dt.strftime("%Y-%m-%dT%H:%M:00"))
             
             sun_state, _ = spice.spkpos('SUN', et, 'IAU_MOON', 'LT+S', 'MOON')
@@ -188,31 +199,78 @@ def analyze_mission(lat: float, lon: float, start_date: str = "2026-11-14T09:00"
             sun_elev, sun_az = get_azimuth_and_elevation(sun_state, surface_pos)
             earth_elev, earth_az = get_azimuth_and_elevation(earth_state, surface_pos)
             
-            _, sun_block, _ = check_terrain_blockage(lat, lon, sun_az, sun_elev, rover_elevation_m)
-            _, earth_block, _ = check_terrain_blockage(lat, lon, earth_az, earth_elev, rover_elevation_m)
+            _, sun_block, _ = check_terrain_blockage(lat, lon, sun_az, sun_elev, rover_elevation_m, "SUN")
+            _, earth_block, _ = check_terrain_blockage(lat, lon, earth_az, earth_elev, rover_elevation_m, "EARTH")
             
-            # If sun is below horizon OR blocked by a mountain
-            if sun_elev < 0 or sun_block:
-                current_solar_outage += 1
-                if current_solar_outage > max_solar_outage: max_solar_outage = current_solar_outage
-            else:
-                solar_active_hours += 1
-                current_solar_outage = 0
-                
-            # If Earth is below horizon OR blocked by a mountain
-            if earth_elev < 0 or earth_block:
+            if earth_elev < -0.95 or earth_block:
                 current_comm_outage += 1
+                comm_timeline.append(0)
                 if current_comm_outage > max_comm_outage: max_comm_outage = current_comm_outage
             else:
-                comm_active_hours += 1
+                comm_active_steps += 1
+                comm_timeline.append(1)
                 current_comm_outage = 0
+                
+            if sun_elev < -0.26 or sun_block:
+                current_solar_outage += 1
+                solar_timeline.append(0)
+                if current_solar_outage > max_solar_outage: max_solar_outage = current_solar_outage
+            else:
+                solar_active_steps += 1
+                solar_timeline.append(1)
+                current_solar_outage = 0
 
         return {
             "duration_days": days,
-            "solar_availability_percent": round((solar_active_hours / total_hours) * 100, 1),
-            "comm_availability_percent": round((comm_active_hours / total_hours) * 100, 1),
-            "max_solar_outage_hours": max_solar_outage,
-            "max_comm_outage_hours": max_comm_outage
+            "solar_availability_percent": round((solar_active_steps / total_steps) * 100, 1),
+            "comm_availability_percent": round((comm_active_steps / total_steps) * 100, 1),
+            "max_solar_outage_hours": round(max_solar_outage * (step_minutes / 60), 1),
+            "max_comm_outage_hours": round(max_comm_outage * (step_minutes / 60), 1),
+            "solar_timeline": solar_timeline,
+            "comm_timeline": comm_timeline
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/scan-region")
+def scan_region(center_lat: float, center_lon: float, start_date: str = "2026-11-14T09:00", days: int = 14):
+    try:
+        results = []
+        # 🚀 SPEED UPGRADE: Test 5 points (Center, North, South, East, West) to cut processing time in half
+        test_points = [
+            (0.0, 0.0),    # Center
+            (0.5, 0.0),    # North
+            (-0.5, 0.0),   # South
+            (0.0, 5.0),    # East (Longitude shrinks near poles, so we jump 5 degrees)
+            (0.0, -5.0)    # West
+        ]
+        
+        for d_lat, d_lon in test_points:
+            test_lat = max(-90.0, min(90.0, center_lat + d_lat))
+            test_lon = (center_lon + d_lon) % 360
+            
+            # 🚀 SPEED UPGRADE: Pass step_minutes=60. Makes the scan 6x FASTER!
+            stats = analyze_mission(test_lat, test_lon, start_date, days, step_minutes=60)
+            if "error" in stats: continue
+            
+            sun_score = stats["solar_availability_percent"] * 0.4
+            comm_score = stats["comm_availability_percent"] * 0.4
+            sun_penalty = (stats["max_solar_outage_hours"] / 336.0) * 10
+            comm_penalty = (stats["max_comm_outage_hours"] / 336.0) * 10
+            reliability_score = max(0, 20 - sun_penalty - comm_penalty)
+            
+            overall_score = round(sun_score + comm_score + reliability_score, 1)
+            
+            results.append({
+                "lat": round(test_lat, 4),
+                "lon": round(test_lon, 4),
+                "score": overall_score,
+                "stats": stats
+            })
+                
+        results = sorted(results, key=lambda x: x["score"], reverse=True)
+        if not results:
+            return {"error": "Math engine failed on all points. Invalid region."}
+        return {"recommended_sites": results[:3]}
     except Exception as e:
         return {"error": str(e)}

@@ -28,10 +28,38 @@ function App() {
       const result = await response.json();
       setMissionStats(result);
     } catch (error) {
-      console.error("Analysis Error:", error); // <-- This satisfies ESLint!
+      console.error("Analysis Error:", error);
       setMissionStats({ error: "Failed to connect to backend engine." });
     }
     setAnalyzing(false);
+  };
+
+  // 🏆 THE KILLER FEATURE: Regional Auto-Scan
+  const [scanning, setScanning] = useState(false);
+  const runRegionalScan = async () => {
+    setScanning(true);
+    setSavedSites([]); // Clear old scoreboard
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/scan-region?center_lat=${lat}&center_lon=${lon}&start_date=${date}&days=14`);
+      const result = await response.json();
+      
+      if (result.recommended_sites && result.recommended_sites.length > 0) {
+        setSavedSites(result.recommended_sites);
+      } else {
+        alert("Scan Alert: " + (result.error || "No viable landing sites found in this rough terrain."));
+      }
+    } catch (error) {
+      console.error("Scan Error:", error);
+      alert("Network Error: Could not reach the NASA API backend.");
+    }
+    setScanning(false);
+  };
+
+  // 📊 TOOLTIP HELPER FOR THE GRAPH
+  const getGraphTooltip = (index, status, type) => {
+    const dt = new Date(new Date(date).getTime() + index * 10 * 60000);
+    const sol = Math.floor(index / 144);
+    return `SOL ${sol} | ${dt.toISOString().substring(11,16)} UTC\n${type}: ${status ? 'AVAILABLE' : 'BLOCKED'}`;
   };
 
   const checkVisibility = async (targetLat, targetLon, targetDate) => {
@@ -178,41 +206,64 @@ function App() {
             </div>
           )}
 
-          <h3 style={{ margin: '20px 0 15px 0', color: '#94a3b8', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '1px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>
+<h3 style={{ margin: '20px 0 15px 0', color: '#94a3b8', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '1px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>
             📊 Mission Simulator
           </h3>
-          <button 
-            onClick={runMissionAnalysis}
-            disabled={analyzing || !data}
-            style={{ width: '100%', padding: '0.8rem', backgroundColor: (analyzing || !data) ? 'rgba(59, 130, 246, 0.2)' : 'rgba(59, 130, 246, 0.8)', color: 'white', border: '1px solid rgba(96, 165, 250, 0.5)', borderRadius: '6px', cursor: (analyzing || !data) ? 'not-allowed' : 'pointer', fontWeight: 'bold', letterSpacing: '1px', transition: 'all 0.3s' }}
-          >
-            {analyzing ? "⚙️ SIMULATING 336 HOURS..." : "🚀 RUN 14-DAY FORECAST"}
-          </button>
+          
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
+            <button 
+              onClick={runMissionAnalysis}
+              disabled={analyzing || scanning || !data}
+              style={{ flex: 1, padding: '0.8rem', backgroundColor: (analyzing || !data) ? 'rgba(59, 130, 246, 0.2)' : 'rgba(59, 130, 246, 0.8)', color: 'white', border: '1px solid rgba(96, 165, 250, 0.5)', borderRadius: '6px', cursor: (analyzing || !data) ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}
+            >
+              {analyzing ? "⚙️ SIMULATING..." : "🚀 14-DAY FORECAST"}
+            </button>
+            <button 
+              onClick={runRegionalScan}
+              disabled={scanning || analyzing || !data}
+              style={{ flex: 1, padding: '0.8rem', backgroundColor: scanning ? 'rgba(168, 85, 247, 0.2)' : 'rgba(168, 85, 247, 0.8)', color: 'white', border: '1px solid rgba(192, 132, 252, 0.5)', borderRadius: '6px', cursor: (scanning || !data) ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}
+            >
+              {scanning ? "📡 SCANNING REGION..." : "📡 AUTO-SCAN AREA"}
+            </button>
+          </div>
 
           {/* Mission Stats Results */}
           {missionStats && (
-            <div style={{ marginTop: '15px', padding: '12px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ padding: '12px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
               {missionStats.error || missionStats.detail || missionStats.solar_availability_percent === undefined ? (
-                 <div style={{ color: '#f87171', fontSize: '0.9rem', wordWrap: 'break-word' }}>
-                   ⚠️ Backend Error: {missionStats.error || missionStats.detail || "Math Engine Crashed"}
-                 </div>
+                 <div style={{ color: '#f87171', fontSize: '0.9rem', wordWrap: 'break-word' }}>⚠️ Backend Error: {missionStats.error || "Math Engine Crashed"}</div>
               ) : (
                 <>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <span style={{ color: '#94a3b8' }}>☀️ Solar Uptime:</span>
+                  {/* ☀️ SUNLIGHT GRAPH */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <span style={{ color: '#94a3b8' }}>☀️ Sunlight Access:</span>
                     <strong style={{ color: missionStats.solar_availability_percent > 50 ? '#4ade80' : '#f87171' }}>{missionStats.solar_availability_percent}%</strong>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <span style={{ color: '#94a3b8' }}>Max Darkness:</span>
-                    <strong style={{ color: '#fbbf24' }}>{missionStats.max_solar_outage_hours} hrs</strong>
+                  <div style={{ display: 'flex', width: '100%', height: '14px', marginBottom: '4px', backgroundColor: '#1e293b', borderRadius: '4px', overflow: 'hidden', cursor: 'crosshair', border: '1px solid rgba(255,255,255,0.1)' }}>
+                    {missionStats.solar_timeline.map((status, i) => (
+                      <div key={i} style={{ flex: 1, backgroundColor: status === 1 ? '#fde047' : 'transparent' }} title={getGraphTooltip(i, status, 'Sunlight')} />
+                    ))}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <span style={{ color: '#94a3b8' }}>🌍 Comm Uptime:</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', fontSize: '10px', fontWeight: 'bold' }}>
+                    <span style={{ color: '#64748b' }}>SOL 0</span>
+                    <span style={{ color: '#fbbf24' }}>Max Outage: {missionStats.max_solar_outage_hours}h</span>
+                    <span style={{ color: '#64748b' }}>SOL 14</span>
+                  </div>
+
+                  {/* 🌍 COMMS GRAPH */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <span style={{ color: '#94a3b8' }}>🌍 Earth Visibility:</span>
                     <strong style={{ color: missionStats.comm_availability_percent > 50 ? '#4ade80' : '#f87171' }}>{missionStats.comm_availability_percent}%</strong>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <span style={{ color: '#94a3b8' }}>Max Blackout:</span>
-                    <strong style={{ color: '#fbbf24' }}>{missionStats.max_comm_outage_hours} hrs</strong>
+                  <div style={{ display: 'flex', width: '100%', height: '14px', marginBottom: '4px', backgroundColor: '#1e293b', borderRadius: '4px', overflow: 'hidden', cursor: 'crosshair', border: '1px solid rgba(255,255,255,0.1)' }}>
+                    {missionStats.comm_timeline.map((status, i) => (
+                      <div key={i} style={{ flex: 1, backgroundColor: status === 1 ? '#38bdf8' : 'transparent' }} title={getGraphTooltip(i, status, 'Earth Comm')} />
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', fontSize: '10px', fontWeight: 'bold' }}>
+                    <span style={{ color: '#64748b' }}>SOL 0</span>
+                    <span style={{ color: '#fbbf24' }}>Max Blackout: {missionStats.max_comm_outage_hours}h</span>
+                    <span style={{ color: '#64748b' }}>SOL 14</span>
                   </div>
 
                   {/* 📌 SAVE SITE BUTTON */}
@@ -287,11 +338,11 @@ function App() {
           {data && !loading && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
               {/* SOLAR */}
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.5)', borderRadius: '8px', borderLeft: `4px solid ${data.sun.power_status === "ACTIVE" ? '#4ade80' : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? '#fbbf24' : '#334155'}` }}>
+              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.5)', borderRadius: '8px', borderLeft: `4px solid ${data.sun.power_status === "ILLUMINATED" ? '#4ade80' : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? '#fbbf24' : '#334155'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                  <h3 style={{ margin: 0, color: '#e0f2fe', fontSize: '15px' }}>☀️ Solar Array</h3>
-                  <span style={{ fontSize: '11px', fontWeight: 'bold', padding: '4px 8px', borderRadius: '4px', backgroundColor: data.sun.power_status === "ACTIVE" ? 'rgba(74, 222, 128, 0.2)' : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? 'rgba(251, 191, 36, 0.2)' : 'rgba(248, 113, 113, 0.2)', color: data.sun.power_status === "ACTIVE" ? '#4ade80' : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? '#fbbf24' : '#f87171' }}>
-                    {data.sun.power_status === "ACTIVE" ? "ONLINE" : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? "OBSTRUCTED" : "ECLIPSED"}
+                  <h3 style={{ margin: 0, color: '#e0f2fe', fontSize: '15px' }}>☀️ Solar Visibility</h3>
+                  <span style={{ fontSize: '11px', fontWeight: 'bold', padding: '4px 8px', borderRadius: '4px', backgroundColor: data.sun.power_status === "ILLUMINATED" ? 'rgba(74, 222, 128, 0.2)' : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? 'rgba(251, 191, 36, 0.2)' : 'rgba(248, 113, 113, 0.2)', color: data.sun.power_status === "ILLUMINATED" ? '#4ade80' : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? '#fbbf24' : '#f87171' }}>
+                    {data.sun.power_status === "ILLUMINATED" ? "ILLUMINATED" : data.sun.power_status === "BLOCKED_BY_TERRAIN" ? "OBSTRUCTED" : "ECLIPSED"}
                   </span>
                 </div>
                 <div style={{ color: '#94a3b8', fontSize: '13px', fontFamily: 'monospace', display: 'flex', justifyContent: 'space-between' }}>
