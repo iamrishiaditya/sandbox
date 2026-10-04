@@ -1,0 +1,18 @@
+# 1. Go to your backend folder
+cd C:\Users\iamri\OneDrive\Documents\Scripts\sandbox\backend
+
+# 2. Activate the Python virtual environment
+.\venv\Scripts\activate
+
+# 3. Boot up the FastAPI server
+uvicorn api:app --reload
+
+
+##  
+                 ##
+# 1. Go to your frontend folder
+cd C:\Users\iamri\OneDrive\Documents\Scripts\sandbox\frontend
+
+# 2. Start the Vite React server
+npm run dev
+

@@ -1,0 +1,13 @@
+# Ignore Python Virtual Environment
+backend/venv/
+__pycache__/
+
+# Ignore Node Modules
+frontend/node_modules/
+
+# Ignore local Vite build files
+frontend/dist/
+
+# Ignore Mac/Windows system files
+.DS_Store
+Thumbs.db

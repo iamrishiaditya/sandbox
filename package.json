@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "react-globe.gl": "^2.38.0"
+  }
+}
