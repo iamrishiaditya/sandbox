@@ -11,6 +11,7 @@ function App() {
   
   const [missionStats, setMissionStats] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [savedSites, setSavedSites] = useState([]); // 📌 NEW: Array to hold our saved comparison sites
 
   // Set initial camera distance when globe loads
   useEffect(() => {
@@ -64,6 +65,45 @@ function App() {
     }
   };
 
+  // 🎇 NEW: Generate the 3D Laser Beams!
+  const buildLasers = () => {
+    if (!data) return [];
+    
+    const createPath = (startLat, startLon, az, elev, status, type) => {
+      const startLatNum = parseFloat(startLat);
+      const startLonNum = parseFloat(startLon);
+      
+      let lengthDeg = 20; // How far the laser shoots into space
+      let altMultiplier = Math.sin(elev * Math.PI / 180) * 0.8; 
+      let color = type === 'sun' ? '#fde047' : '#38bdf8'; // Yellow (Sun) or Blue (Earth)
+      
+      if (status === 'BLOCKED_BY_TERRAIN') {
+          lengthDeg = 2; // Stubby laser that hits the mountain
+          altMultiplier = Math.sin(elev * Math.PI / 180) * 0.05;
+          color = '#ef4444'; // Red! (Signal Crashed)
+      } else if (elev < 0) {
+          lengthDeg = 5; 
+          altMultiplier = -0.05; // Point down into the ground
+          color = '#475569'; // Dim Gray (Nighttime/Hidden)
+      }
+
+      // Spherical math to point the laser in the correct compass Azimuth direction
+      const cosLat = Math.max(0.1, Math.abs(Math.cos(startLatNum * Math.PI / 180))); // Prevent pole glitching
+      const endLat = startLatNum + (Math.cos(az * Math.PI / 180) * lengthDeg);
+      const endLon = startLonNum + (Math.sin(az * Math.PI / 180) * lengthDeg / cosLat);
+      
+      return {
+        coords: [[startLatNum, startLonNum, 0.005], [endLat, endLon, altMultiplier]],
+        color: color
+      };
+    };
+
+    return [
+      createPath(lat, lon, data.sun.azimuth_deg, data.sun.elevation_deg, data.sun.power_status, 'sun'),
+      createPath(lat, lon, data.earth.azimuth_deg, data.earth.elevation_deg, data.earth.comm_status, 'earth')
+    ];
+  };
+
   return (
     <>
       {/* Nuke Vite's default CSS that is causing the blank left space */}
@@ -89,10 +129,26 @@ function App() {
         <div style={{ position: 'absolute', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 1, cursor: 'crosshair' }}>
           <Globe
             ref={globeRef}
-            globeImageUrl="https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_1024.jpg"
-            backgroundImageUrl="https://unpkg.com/three-globe/example/img/night-sky.png"
+            globeImageUrl="/ghibli-moon.svg"
+            backgroundImageUrl="/ghibli-stars.svg"
             onGlobeClick={handleGlobeClick}
             waitForGlobeReady={true}
+            
+            // 📍 1. The Pulsing Green Radar Ring at the Rover Site
+            ringsData={data ? [{ lat: parseFloat(lat), lng: parseFloat(lon) }] : []}
+            ringColor={() => '#10b981'}
+            ringMaxRadius={2.5}
+            ringPropagationSpeed={1}
+            ringRepeatPeriod={800}
+
+            // 🔫 2. The Animated 3D Laser Beams
+            pathsData={buildLasers()}
+            pathPoints="coords"
+            pathColor="color"
+            pathWidth={3.5}
+            pathDashLength={0.15}
+            pathDashGap={0.05}
+            pathDashAnimateTime={2000}
           />
         </div>
 
@@ -154,15 +210,61 @@ function App() {
                     <span style={{ color: '#94a3b8' }}>🌍 Comm Uptime:</span>
                     <strong style={{ color: missionStats.comm_availability_percent > 50 ? '#4ade80' : '#f87171' }}>{missionStats.comm_availability_percent}%</strong>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                     <span style={{ color: '#94a3b8' }}>Max Blackout:</span>
                     <strong style={{ color: '#fbbf24' }}>{missionStats.max_comm_outage_hours} hrs</strong>
                   </div>
+
+                  {/* 📌 SAVE SITE BUTTON */}
+                  <button 
+                    onClick={() => {
+                      // Prevent saving the exact same spot twice
+                      if (!savedSites.find(s => s.lat === lat && s.lon === lon)) {
+                        setSavedSites([...savedSites, { lat, lon, stats: missionStats }]);
+                      }
+                    }}
+                    style={{ width: '100%', padding: '0.6rem', backgroundColor: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(52, 211, 153, 0.5)', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem', letterSpacing: '1px', transition: 'all 0.3s' }}
+                  >
+                    📌 SAVE CANDIDATE SITE
+                  </button>
                 </>
               )}
             </div>
           )}
         </div>
+
+        {/* 📊 CANDIDATE SITE COMPARISON SCOREBOARD (BOTTOM LEFT) */}
+        {savedSites.length > 0 && (
+          <div className="glass-panel" style={{ position: 'absolute', bottom: '30px', left: '30px', zIndex: 10, display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: 'calc(100vw - 450px)', overflowX: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, color: '#94a3b8', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                📊 Candidate Site Comparison
+              </h3>
+              <button onClick={() => setSavedSites([])} style={{ background: 'transparent', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', letterSpacing: '1px' }}>[ CLEAR ]</button>
+            </div>
+            
+            <div style={{ display: 'flex', gap: '15px' }}>
+              {savedSites.map((site, idx) => (
+                <div key={idx} style={{ background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.1)', padding: '12px', borderRadius: '8px', minWidth: '170px' }}>
+                  <div style={{ color: '#e0f2fe', fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px' }}>
+                    📍 Target {String.fromCharCode(65 + idx)} {/* Converts 0 to A, 1 to B, etc. */}
+                  </div>
+                  <div style={{ color: '#38bdf8', fontSize: '11px', fontFamily: 'monospace', marginBottom: '10px' }}>
+                    LAT: {site.lat}<br/>LON: {site.lon}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
+                    <span style={{ color: '#94a3b8' }}>☀️ Solar:</span>
+                    <span style={{ color: site.stats.solar_availability_percent > 50 ? '#4ade80' : '#f87171', fontWeight: 'bold' }}>{site.stats.solar_availability_percent}%</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                    <span style={{ color: '#94a3b8' }}>🌍 Comm:</span>
+                    <span style={{ color: site.stats.comm_availability_percent > 50 ? '#4ade80' : '#f87171', fontWeight: 'bold' }}>{site.stats.comm_availability_percent}%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 📡 RIGHT PANEL: LIVE TELEMETRY */}
         <div className="glass-panel" style={{ position: 'absolute', top: '100px', right: '30px', width: '380px', zIndex: 10 }}>
